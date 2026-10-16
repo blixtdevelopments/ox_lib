@@ -8,6 +8,17 @@
 
 local contextMenus = {}
 local openContextMenu = nil
+local usingBlixtContext = false
+
+local function blixtContextCall(name, data)
+    if GetResourceState('blixt-ui') ~= 'started' then return false end
+    local ok, result = pcall(function()
+        if name == 'showContext' then return exports['blixt-ui']:showContext(data) end
+        if name == 'hideContext' then return exports['blixt-ui']:hideContext() end
+        return false
+    end)
+    return ok and result == true
+end
 
 ---@class ContextMenuItem
 ---@field title? string
@@ -47,7 +58,12 @@ local function closeContext(_, cb, onExit)
 
     if (cb or onExit) and contextMenus[openContextMenu].onExit then contextMenus[openContextMenu].onExit() end
 
-    if not cb then SendNUIMessage({ action = 'hideContext' }) end
+    if usingBlixtContext then
+        blixtContextCall('hideContext')
+    elseif not cb then
+        SendNUIMessage({ action = 'hideContext' })
+    end
+    usingBlixtContext = false
 
     openContextMenu = nil
 end
@@ -59,17 +75,22 @@ function lib.showContext(id)
     local data = contextMenus[id]
     openContextMenu = id
 
-    lib.setNuiFocus(false)
+    local payload = {
+        title = data.title,
+        canClose = data.canClose,
+        menu = data.menu,
+        options = data.options
+    }
 
-    SendNuiMessage(json.encode({
-        action = 'showContext',
-        data = {
-            title = data.title,
-            canClose = data.canClose,
-            menu = data.menu,
-            options = data.options
-        }
-    }, { sort_keys = true }))
+    -- Use the same JSON-safe payload as stock ox_lib (onSelect callbacks remain in ox_lib).
+    if blixtContextCall('showContext', json.encode(payload, { sort_keys = true })) then
+        usingBlixtContext = true
+        return
+    end
+
+    usingBlixtContext = false
+    lib.setNuiFocus(false)
+    SendNuiMessage(json.encode({ action = 'showContext', data = payload }, { sort_keys = true }))
 end
 
 ---@param context ContextMenuProps | ContextMenuProps[]
@@ -90,16 +111,18 @@ function lib.getOpenContextMenu() return openContextMenu end
 ---@param onExit boolean?
 function lib.hideContext(onExit) closeContext(nil, nil, onExit) end
 
-RegisterNUICallback('openContext', function(data, cb)
+local function handleContextOpen(data, cb)
     cb(1)
 
     local menu = openContextMenu and contextMenus[openContextMenu]
     if data.back and menu and menu.onBack then menu.onBack() end
 
     lib.showContext(data.id)
-end)
+end
 
-RegisterNUICallback('clickContext', function(id, cb)
+RegisterNUICallback('openContext', handleContextOpen)
+
+local function handleContextClick(id, cb)
     cb(1)
 
     if math.type(tonumber(id)) == 'float' then
@@ -116,15 +139,30 @@ RegisterNUICallback('clickContext', function(id, cb)
 
     openContextMenu = nil
 
-    SendNUIMessage({ action = 'hideContext' })
+    if usingBlixtContext then
+        blixtContextCall('hideContext')
+        usingBlixtContext = false
+    else
+        SendNUIMessage({ action = 'hideContext' })
+    end
     lib.resetNuiFocus()
 
     if data.onSelect then data.onSelect(data.args) end
     if data.event then TriggerEvent(data.event, data.args) end
     if data.serverEvent then TriggerServerEvent(data.serverEvent, data.args) end
-end)
+end
+
+RegisterNUICallback('clickContext', handleContextClick)
 
 RegisterNUICallback('closeContext', closeContext)
+
+-- Only the Blixt NUI responds to these local events; ox_lib remains the callback owner.
+AddEventHandler('blixt-ui:contextAction', function(action, data)
+    local noop = function() end
+    if action == 'openContext' then handleContextOpen(data, noop)
+    elseif action == 'clickContext' then handleContextClick(data, noop)
+    elseif action == 'closeContext' then closeContext(data, noop) end
+end)
 
 
 

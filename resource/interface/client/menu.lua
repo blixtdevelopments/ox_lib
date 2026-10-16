@@ -10,6 +10,23 @@
 local registeredMenus = {}
 ---@type MenuProps | nil
 local openMenu
+local usingBlixtMenu = false
+
+local function blixtMenuCall(name, data)
+    if GetResourceState('blixt-ui') ~= 'started' then return false end
+    local ok, result = pcall(function()
+        if name == 'showMenu' then return exports['blixt-ui']:showMenu(data) end
+        if name == 'hideMenu' then return exports['blixt-ui']:hideMenu() end
+        return false
+    end)
+    return ok and result == true
+end
+
+local function hideBlixtMenu()
+    if not usingBlixtMenu then return end
+    blixtMenuCall('hideMenu')
+    usingBlixtMenu = false
+end
 
 ---@alias MenuPosition 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
 ---@alias MenuChangeFunction fun(selected: number, scrollIndex?: number, args?: any, checked?: boolean)
@@ -81,18 +98,23 @@ function lib.showMenu(id, startIndex)
     end
 
     openMenu = menu
-    lib.setNuiFocus(not menu.disableInput, true)
+    local payload = {
+        position = menu.position,
+        canClose = menu.canClose,
+        title = menu.title,
+        items = menu.options,
+        startItemIndex = startIndex and startIndex - 1 or 0,
+        disableInput = menu.disableInput,
+    }
 
-    SendNUIMessage({
-        action = 'setMenu',
-        data = {
-            position = menu.position,
-            canClose = menu.canClose,
-            title = menu.title,
-            items = menu.options,
-            startItemIndex = startIndex and startIndex - 1 or 0
-        }
-    })
+    if blixtMenuCall('showMenu', payload) then
+        usingBlixtMenu = true
+        return
+    end
+
+    usingBlixtMenu = false
+    lib.setNuiFocus(not menu.disableInput, true)
+    SendNUIMessage({ action = 'setMenu', data = payload })
 end
 ---@param onExit boolean?
 function lib.hideMenu(onExit)
@@ -102,6 +124,7 @@ function lib.hideMenu(onExit)
     if not menu then return end
 
     lib.resetNuiFocus()
+    hideBlixtMenu()
 
     if onExit and menu.onClose then
         menu.onClose()
@@ -127,7 +150,7 @@ end
 ---@return string?
 function lib.getOpenMenu() return openMenu and openMenu.id end
 
-RegisterNUICallback('confirmSelected', function(data, cb)
+local function onBlixtConfirm(data, cb)
     cb(1)
     data[1] += 1 -- selected
 
@@ -141,15 +164,18 @@ RegisterNUICallback('confirmSelected', function(data, cb)
 
     if menu.options[data[1]].close ~= false then
         lib.resetNuiFocus()
+        hideBlixtMenu()
         openMenu = nil
     end
 
     if menu.cb then
         menu.cb(data[1], data[2], menu.options[data[1]].args, data[3])
     end
-end)
+end
 
-RegisterNUICallback('changeIndex', function(data, cb)
+RegisterNUICallback('confirmSelected', onBlixtConfirm)
+
+local function onBlixtIndex(data, cb)
     cb(1)
     if not openMenu or not openMenu.onSideScroll then return end
 
@@ -160,9 +186,11 @@ RegisterNUICallback('changeIndex', function(data, cb)
     end
 
     openMenu.onSideScroll(data[1], data[2], openMenu.options[data[1]].args)
-end)
+end
 
-RegisterNUICallback('changeSelected', function(data, cb)
+RegisterNUICallback('changeIndex', onBlixtIndex)
+
+local function onBlixtSelected(data, cb)
     cb(1)
     if not openMenu or not openMenu.onSelected then return end
 
@@ -183,20 +211,25 @@ RegisterNUICallback('changeSelected', function(data, cb)
     end
 
     openMenu.onSelected(data[1], data[2], args)
-end)
+end
 
-RegisterNUICallback('changeChecked', function(data, cb)
+RegisterNUICallback('changeSelected', onBlixtSelected)
+
+local function onBlixtChecked(data, cb)
     cb(1)
     if not openMenu or not openMenu.onCheck then return end
 
     data[1] += 1 -- selected
 
     openMenu.onCheck(data[1], data[2], openMenu.options[data[1]].args)
-end)
+end
 
-RegisterNUICallback('closeMenu', function(data, cb)
+RegisterNUICallback('changeChecked', onBlixtChecked)
+
+local function onBlixtClose(data, cb)
     cb(1)
     lib.resetNuiFocus()
+    hideBlixtMenu()
 
     local menu = openMenu
 
@@ -207,4 +240,16 @@ RegisterNUICallback('closeMenu', function(data, cb)
     if menu.onClose then
         menu.onClose(data --[[@as 'Escape' | 'Backspace' | nil]])
     end
+end
+
+RegisterNUICallback('closeMenu', onBlixtClose)
+
+-- Forward Blixt NUI input to the original ox_lib callback handlers.
+AddEventHandler('blixt-ui:menuAction', function(action, data)
+    local noop = function() end
+    if action == 'confirmSelected' then onBlixtConfirm(data, noop)
+    elseif action == 'changeIndex' then onBlixtIndex(data, noop)
+    elseif action == 'changeSelected' then onBlixtSelected(data, noop)
+    elseif action == 'changeChecked' then onBlixtChecked(data, noop)
+    elseif action == 'closeMenu' then onBlixtClose(data, noop) end
 end)

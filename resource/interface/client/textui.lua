@@ -15,6 +15,17 @@
 
 local isOpen = false
 local currentText
+local currentOptions
+local usingBlixtText = false
+
+local function blixtTextCall(action, data)
+    if GetResourceState('blixt-ui') ~= 'started' then return false end
+    local ok, result = pcall(function()
+        if action == 'show' then return exports['blixt-ui']:showTextUI(data) end
+        return exports['blixt-ui']:hideTextUI()
+    end)
+    return ok and result == true
+end
 
 ---@param text string
 ---@param options? TextUIOptions
@@ -22,28 +33,44 @@ function lib.showTextUI(text, options)
     if currentText == text then return end
 
     if not options then options = {} end
-
     options.text = text
     currentText = text
+    currentOptions = options
 
-    SendNUIMessage({
-        action = 'textUi',
-        data = options
-    })
+    if blixtTextCall('show', options) then
+        if isOpen and not usingBlixtText then
+            SendNUIMessage({ action = 'textUiHide' })
+        end
+        usingBlixtText = true
+    else
+        usingBlixtText = false
+        SendNUIMessage({ action = 'textUi', data = options })
+    end
 
     isOpen = true
 end
 
 function lib.hideTextUI()
-    SendNUIMessage({
-        action = 'textUiHide'
-    })
+    if usingBlixtText then
+        blixtTextCall('hide')
+        usingBlixtText = false
+    else
+        SendNUIMessage({ action = 'textUiHide' })
+    end
 
     isOpen = false
     currentText = nil
+    currentOptions = nil
 end
 
 ---@return boolean, string | nil
 function lib.isTextUIOpen()
     return isOpen, currentText
 end
+
+AddEventHandler('onClientResourceStop', function(resource)
+    if resource == 'blixt-ui' and usingBlixtText and isOpen and currentOptions then
+        usingBlixtText = false
+        SendNUIMessage({ action = 'textUi', data = currentOptions })
+    end
+end)

@@ -27,6 +27,30 @@
 local isOpen = false
 
 local isDisabled = false
+local usingBlixtRadial = false
+
+local function blixtRadialCall(name, data)
+    if GetResourceState('blixt-ui') ~= 'started' then return false end
+
+    local ok, result = pcall(function()
+        if name == 'beginRadial' then return exports['blixt-ui']:beginRadial() end
+        if name == 'updateRadial' then return exports['blixt-ui']:updateRadial(data) end
+        if name == 'endRadial' then return exports['blixt-ui']:endRadial() end
+        return false
+    end)
+
+    return ok and result == true
+end
+
+local function radialMessage(data)
+    if usingBlixtRadial then
+        if not blixtRadialCall('updateRadial', data) then
+            lib.hideRadial()
+        end
+    else
+        SendNUIMessage({ action = 'openRadialMenu', data = data })
+    end
+end
 
 ---@type table<string, RadialMenuProps>
 local menus = {}
@@ -57,23 +81,17 @@ local function showRadial(id, option)
     currentRadial = radial
 
     -- Hide current menu and allow for transition
-    SendNUIMessage({
-        action = 'openRadialMenu',
-        data = false
-    })
+    radialMessage(false)
 
     Wait(100)
 
     -- If menu was closed during transition, don't open the submenu
     if not isOpen then return end
 
-    SendNUIMessage({
-        action = 'openRadialMenu',
-        data = {
-            items = radial and radial.items or menuItems,
-            sub = radial and radial ~= rootRadial or nil,
-            option = option
-        }
+    radialMessage({
+        items = radial and radial.items or menuItems,
+        sub = radial and radial ~= rootRadial or nil,
+        option = option
     })
 end
 
@@ -140,12 +158,20 @@ local function onRadialOpen(id)
     rootRadial = radial
     table.wipe(menuHistory)
 
-    lib.setNuiFocus(true)
-    SetCursorLocation(0.5, 0.5)
+    usingBlixtRadial = blixtRadialCall('beginRadial')
+
+    if not usingBlixtRadial then
+        lib.setNuiFocus(true)
+        SetCursorLocation(0.5, 0.5)
+    end
 
     showRadial(id)
 
     while isOpen do
+        if usingBlixtRadial and GetResourceState('blixt-ui') ~= 'started' then
+            lib.hideRadial()
+            break
+        end
         DisablePlayerFiring(cache.playerId, true)
         DisableControlAction(0, 1, true)
         DisableControlAction(0, 2, true)
@@ -174,12 +200,13 @@ end
 function lib.hideRadial()
     if not isOpen then return end
 
-    SendNUIMessage({
-        action = 'openRadialMenu',
-        data = false
-    })
-
-    lib.resetNuiFocus()
+    if usingBlixtRadial then
+        blixtRadialCall('endRadial')
+        usingBlixtRadial = false
+    else
+        SendNUIMessage({ action = 'openRadialMenu', data = false })
+        lib.resetNuiFocus()
+    end
     table.wipe(menuHistory)
 
     isOpen = false
@@ -273,9 +300,10 @@ function lib.clearRadialItems()
     end
 end
 
-RegisterNUICallback('radialClick', function(index, cb)
+local function handleRadialClick(index, cb)
     cb(1)
 
+    if not isOpen or type(index) ~= 'number' or index % 1 ~= 0 then return end
     local itemIndex = index + 1
     local item, currentMenu
 
@@ -286,6 +314,7 @@ RegisterNUICallback('radialClick', function(index, cb)
         item = menuItems[itemIndex]
     end
 
+    if not item then return end
     local menuResource = currentRadial and currentRadial.resource or item.resource
 
     if item.menu then
@@ -304,9 +333,11 @@ RegisterNUICallback('radialClick', function(index, cb)
 
         onSelect(currentMenu, itemIndex)
     end
-end)
+end
 
-RegisterNUICallback('radialBack', function(_, cb)
+RegisterNUICallback('radialClick', handleRadialClick)
+
+local function handleRadialBack(_, cb)
     cb(1)
 
     local numHistory = #menuHistory
@@ -323,35 +354,45 @@ RegisterNUICallback('radialBack', function(_, cb)
     currentRadial = nil
 
     -- Hide current menu and allow for transition
-    SendNUIMessage({
-        action = 'openRadialMenu',
-        data = false
-    })
+    radialMessage(false)
 
     Wait(100)
 
     -- If menu was closed during transition, don't open the submenu
     if not isOpen then return end
 
-    SendNUIMessage({
-        action = 'openRadialMenu',
-        data = {
-            items = menuItems,
-            option = lastMenu.option
-        }
+    radialMessage({
+        items = menuItems,
+        option = lastMenu.option
     })
-end)
+end
 
-RegisterNUICallback('radialClose', function(_, cb)
+RegisterNUICallback('radialBack', handleRadialBack)
+
+local function handleRadialClose(_, cb)
     cb(1)
-
     if not isOpen then return end
 
-    lib.resetNuiFocus()
+    if usingBlixtRadial then
+        lib.hideRadial()
+        return
+    end
 
+    lib.resetNuiFocus()
     isOpen = false
     currentRadial = nil
     rootRadial = nil
+end
+
+RegisterNUICallback('radialClose', handleRadialClose)
+
+AddEventHandler('blixt-ui:radialAction', function(action, data)
+    if not usingBlixtRadial or not isOpen then return end
+
+    local noop = function() end
+    if action == 'click' then handleRadialClick(data, noop)
+    elseif action == 'back' then handleRadialBack(nil, noop)
+    elseif action == 'close' then handleRadialClose(nil, noop) end
 end)
 
 RegisterNUICallback('radialTransition', function(_, cb)
@@ -396,5 +437,10 @@ AddEventHandler('onClientResourceStop', function(resource)
         if item.resource == resource then
             table.remove(menuItems, i)
         end
+    end
+end)
+AddEventHandler('onClientResourceStop', function(resource)
+    if resource == 'blixt-ui' and isOpen and usingBlixtRadial then
+        lib.hideRadial()
     end
 end)

@@ -7,6 +7,16 @@
 ]]
 
 local input
+local usingBlixtInput = false
+
+local function blixtInputCall(action, payload)
+    if GetResourceState('blixt-ui') ~= 'started' then return false end
+    local ok, result = pcall(function()
+        if action == 'show' then return exports['blixt-ui']:showInputDialog(payload) end
+        return exports['blixt-ui']:hideInputDialog()
+    end)
+    return ok and result == true
+end
 
 ---@class InputDialogRowProps
 ---@field type 'input' | 'number' | 'checkbox' | 'select' | 'slider' | 'multi-select' | 'date' | 'date-range' | 'time' | 'textarea' | 'color'
@@ -55,6 +65,12 @@ function lib.inputDialog(heading, rows, options)
             or row
     end
 
+    if blixtInputCall('show', { heading = heading, rows = normalized, options = options }) then
+        usingBlixtInput = true
+        return Citizen.Await(input)
+    end
+
+    usingBlixtInput = false
     lib.setNuiFocus(false)
     SendNUIMessage({
         action = 'openDialog',
@@ -71,21 +87,37 @@ end
 function lib.closeInputDialog()
     if not input then return end
 
+    if usingBlixtInput then
+        blixtInputCall('hide')
+        usingBlixtInput = false
+    else
+        SendNUIMessage({ action = 'closeInputDialog' })
+    end
     lib.resetNuiFocus()
-    SendNUIMessage({
-        action = 'closeInputDialog'
-    })
 
     input:resolve(nil)
     input = nil
 end
 
+local function resolveInput(data)
+    if not input then return end
+    if usingBlixtInput then
+        blixtInputCall('hide')
+        usingBlixtInput = false
+    end
+    lib.resetNuiFocus()
+    local pending = input
+    input = nil
+    pending:resolve(data)
+end
+
 RegisterNUICallback('inputData', function(data, cb)
     cb(1)
-    lib.resetNuiFocus()
+    resolveInput(data)
+end)
 
-    local promise = input
-    input = nil
+AddEventHandler('blixt-ui:inputResult', resolveInput)
 
-    promise:resolve(data)
+AddEventHandler('onClientResourceStop', function(resource)
+    if resource == 'blixt-ui' and usingBlixtInput then resolveInput(nil) end
 end)

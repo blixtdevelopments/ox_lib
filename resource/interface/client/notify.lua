@@ -36,10 +36,24 @@ function lib.notify(data)
     payload.sound = nil
     payload.position = payload.position or settings.notification_position
 
-    SendNUIMessage({
-        action = 'notify',
-        data = payload
-    })
+    -- Blixt Developments: send notifications to the optional Blixt UI resource.
+    -- Use the original ox_lib UI if the resource is unavailable or not ready.
+    local handled = false
+
+    if GetResourceState('blixt-ui') == 'started' then
+        local ok, result = pcall(function()
+            return exports['blixt-ui']:notify(payload)
+        end)
+
+        handled = ok and result == true
+    end
+
+    if not handled then
+        SendNUIMessage({
+            action = 'notify',
+            data = payload
+        })
+    end
 
     if not sound then return end
 

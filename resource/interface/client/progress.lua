@@ -7,6 +7,8 @@
 ]]
 
 local progress
+local blixtToken = 0
+local activeBlixtToken
 local DisableControlAction = DisableControlAction
 local DisablePlayerFiring = DisablePlayerFiring
 local playerState = LocalPlayer.state
@@ -174,10 +176,35 @@ local function startProgress(data, nuiMessage)
 
     local disable = data.disable
     local startTime = GetGameTimer()
+    local usingBlixt = false
+    local token
 
-    SendNUIMessage(nuiMessage)
+    if (nuiMessage.action == 'progress' or nuiMessage.action == 'circleProgress') and GetResourceState('blixt-ui') == 'started' then
+        blixtToken += 1
+        token = blixtToken
+
+        local ok, result = pcall(function()
+            return exports['blixt-ui']:startProgress({
+                id = token,
+                label = data.label,
+                duration = data.duration,
+                position = nuiMessage.action == 'circleProgress' and 'bottom' or data.position,
+                kind = nuiMessage.action == 'circleProgress' and 'circle' or 'bar',
+            })
+        end)
+
+        usingBlixt = ok and result == true
+
+        if usingBlixt then activeBlixtToken = token end
+    end
+
+    if not usingBlixt then SendNUIMessage(nuiMessage) end
 
     while progress do
+        if usingBlixt and GetResourceState('blixt-ui') ~= 'started' then
+            progress = false
+            break
+        end
         if disable then
             if disable.mouse then
                 DisableControlAction(0, controls.INPUT_LOOK_LR, true)
@@ -232,8 +259,15 @@ local function startProgress(data, nuiMessage)
 
     local duration = progress ~= false and GetGameTimer() - startTime + 100 -- give slight leeway
 
+    if usingBlixt then
+        activeBlixtToken = nil
+        if GetResourceState('blixt-ui') == 'started' then
+            pcall(function() exports['blixt-ui']:stopProgress(token) end)
+        end
+    end
+
     if progress == false or duration <= data.duration then
-        SendNUIMessage({ action = 'progressCancel' })
+        if not usingBlixt then SendNUIMessage({ action = 'progressCancel' }) end
         return false
     end
 
@@ -288,7 +322,14 @@ end
 
 RegisterNUICallback('progressComplete', function(data, cb)
     cb(1)
-    progress = nil
+    if not activeBlixtToken then progress = nil end
+end)
+
+-- The independent Blixt UI NUI returns completion through its own client resource.
+AddEventHandler('blixt-ui:progressComplete', function(token)
+    if activeBlixtToken and token == activeBlixtToken and progress then
+        progress = nil
+    end
 end)
 
 RegisterCommand('cancelprogress', function()
