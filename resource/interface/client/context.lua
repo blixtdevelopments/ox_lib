@@ -43,6 +43,7 @@ end
 ---@class ContextMenuProps
 ---@field id string
 ---@field title string
+---@field position? 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
 ---@field menu? string
 ---@field onExit? fun()
 ---@field onBack? fun()
@@ -75,12 +76,13 @@ function lib.showContext(id)
     local data = contextMenus[id]
     openContextMenu = id
 
-    local payload = {
-        title = data.title,
-        canClose = data.canClose,
-        menu = data.menu,
-        options = data.options
-    }
+        local payload = {
+            title = data.title,
+            position = data.position,
+            canClose = data.canClose,
+            menu = data.menu,
+            options = data.options
+        }
 
     -- Use the same JSON-safe payload as stock ox_lib (onSelect callbacks remain in ox_lib).
     if blixtContextCall('showContext', json.encode(payload, { sort_keys = true })) then
